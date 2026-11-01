@@ -11,7 +11,7 @@
   and the check names are sdcreceipt's.
 - **Conforms to the VSL conformance kit 1.1:** all 17 vectors, each invalid one failing on the
   check the manifest names, and all 5 key-document cases. Also passes sdcgovernance's 21 RFC 8785
-  vectors. CI pins the kit to sdcreceipt commit `50590c0` and the vectors to sdcgovernance `v4.3.1`.
+  vectors. CI pins the kit to sdcreceipt commit `50590c0`.
 - **Key documents:**
   - `loadKeySet` reads the issuer key-set shape and did:web DID documents, admitting P-256 and
     ML-DSA-65 keys only and keeping `revoked`.
@@ -36,5 +36,14 @@
   - The MCP `settle` tool is offered only when the server is started with `--endpoint`, and posts
     only there.
   - Tested against a stand-in issuer on loopback, not against a live one.
+- **Decision tables and governance Receipts**, the parts of sdcgovernance a Receipt relies on:
+  - `parseDecisionTable`, `decisionTableHash` (a governance Receipt's `table_hash`),
+    `evaluateDecisionTable` (FIRST, UNIQUE, COLLECT) and an in-memory `TableRegistry` that loads
+    sdcgovernance's saved records.
+  - `verifyGovernanceReceipt` recomputes a governance Receipt's own `receipt_hash`, including one
+    hashed before RFC 8785. It refuses, rather than guesses, a legacy Receipt carrying a number.
+  - Python's semantics are kept where JavaScript differs.
+  - Conforms to sdcgovernance's decision-table and governance-Receipt vectors: every table hash,
+    37 evaluations, 9 governance Receipts. CI pins them to sdcgovernance commit `396c2bf`.
 - **Runs in Node, Deno and browsers.** Checked 2026-11-01 on Node 24.4 (CI runs Node 20, 22 and
   24), Deno 2.5.6 (all 17 kit vectors) and Chromium 152 (the 1.1 vector with its schema).
