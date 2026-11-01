@@ -24,12 +24,17 @@
   2^53 - 1 and excessive nesting. Canonicalization refuses values with no JSON form.
 - **A command and an MCP server:**
   - `npx sdcreceipt-ts verify` takes key documents in roles.
-  - `npx sdcreceipt-ts mcp` serves `verify_receipt`, and `sign_trigger` when started with
-    `--key` and `--key-id`. No tool takes a URL. Registered as
+  - `npx sdcreceipt-ts mcp` serves `verify_receipt`, `sign_trigger` when started with `--key`
+    and `--key-id`, and `settle` when started with `--endpoint`. No tool takes a URL. Registered as
     `io.github.SemanticDataCharter/sdcreceipt-ts`.
+- **`settle`**: asks a VSL issuer to issue a Receipt, as sdcreceipt's client does. It refuses an
+  endpoint that is not `https://` (or loopback `http://`), refuses to follow a redirect, and
+  requires two distinct parties before any round trip. A refused transition raises
+  `SettleRejected` with the states that would have worked. `splitResponse` takes the Receipt out of
+  the issuer's envelope.
+  - The `settle` command takes the token only from `SDCRECEIPT_TOKEN`, never a flag.
+  - The MCP `settle` tool is offered only when the server is started with `--endpoint`, and posts
+    only there.
+  - Tested against a stand-in issuer on loopback, not against a live one.
 - **Runs in Node, Deno and browsers.** Checked 2026-11-01 on Node 24.4 (CI runs Node 20, 22 and
   24), Deno 2.5.6 (all 17 kit vectors) and Chromium 152 (the 1.1 vector with its schema).
-
-### Not included
-
-sdcreceipt's `settle`, the authenticated client of an issuer's settle API.
