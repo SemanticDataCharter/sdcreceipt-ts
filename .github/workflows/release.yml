@@ -1,0 +1,108 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  # Keep in step with test.yml.
+  KIT_REF: 50590c0bb04e93e7ef6de780e4e4ebb93c7f003c
+  VECTORS_REF: v4.3.1
+
+jobs:
+  # A tag publishes irrevocably, so the conformance suite runs first.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check out the conformance kit
+        uses: actions/checkout@v7
+        with:
+          repository: SemanticDataCharter/sdcreceipt
+          ref: ${{ env.KIT_REF }}
+          path: sdcreceipt
+          sparse-checkout: tests/conformance
+
+      - name: Check out the canonicalization vectors
+        uses: actions/checkout@v7
+        with:
+          repository: SemanticDataCharter/sdcgovernance
+          ref: ${{ env.VECTORS_REF }}
+          path: sdcgovernance
+          sparse-checkout: test-vectors
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+
+      - name: Conformance kit, canonicalization vectors, party side, MCP server
+        run: npm test
+        env:
+          SDCRECEIPT_KIT: ${{ github.workspace }}/sdcreceipt/tests/conformance
+          JCS_VECTORS: ${{ github.workspace }}/sdcgovernance/test-vectors/rfc8785-canonicalization.json
+
+      - name: Tag matches the package version
+        run: |
+          pkg=$(node -p "require('./package.json').version")
+          test "v$pkg" = "${GITHUB_REF_NAME}" || { echo "tag ${GITHUB_REF_NAME} != v$pkg"; exit 1; }
+
+  publish-npm:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      id-token: write   # npm trusted publishing and provenance
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      - run: npm ci
+      - run: npm run build
+
+      - name: Publish to npm
+        # A package's first version is published by hand from the owner's npm account, because a
+        # trusted publisher is set on a package that already exists. After that, trusted publishing:
+        # npm exchanges the OIDC token above for a publish credential, so no npm token is stored.
+        # The trusted publisher on npmjs.com names this repo, release.yml and the npm environment,
+        # with permission to publish (not only to stage).
+        run: npm publish --provenance --access public
+
+  publish-mcp:
+    needs: publish-npm
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # GitHub OIDC for MCP Registry auth (io.github.SemanticDataCharter/*)
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+
+      - name: Authenticate to MCP Registry (GitHub OIDC)
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish to MCP Registry
+        run: |
+          # Retry: npm can take a moment to expose the new version for ownership validation.
+          for attempt in 1 2 3 4 5; do
+            if ./mcp-publisher publish; then
+              echo "Published to the MCP registry."
+              exit 0
+            fi
+            echo "Attempt $attempt failed (npm may still be propagating); retrying in 30s..."
+            sleep 30
+          done
+          echo "::error::mcp-publisher publish failed after 5 attempts." >&2
+          exit 1

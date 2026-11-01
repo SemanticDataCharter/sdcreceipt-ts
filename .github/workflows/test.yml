@@ -1,0 +1,62 @@
+name: Tests
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    # dev is the persistent integration branch, so PRs land there first.
+    branches: [main, dev]
+
+env:
+  # The VSL conformance kit (tests/conformance/ in sdcreceipt) and sdcgovernance's RFC 8785 vectors
+  # (test-vectors/). Pinned so the reference is fixed; moving either is a deliberate change, made
+  # with the CHANGELOG and README. Kit 1.1 (17 vectors, 5 key-document cases) is on sdcreceipt's
+  # main but in no release tag yet, so it is pinned by commit until one includes it.
+  KIT_REF: 50590c0bb04e93e7ef6de780e4e4ebb93c7f003c
+  VECTORS_REF: v4.3.1
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ["20", "22", "24"]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check out the conformance kit
+        uses: actions/checkout@v7
+        with:
+          repository: SemanticDataCharter/sdcreceipt
+          ref: ${{ env.KIT_REF }}
+          path: sdcreceipt
+          sparse-checkout: tests/conformance
+
+      - name: Check out the canonicalization vectors
+        uses: actions/checkout@v7
+        with:
+          repository: SemanticDataCharter/sdcgovernance
+          ref: ${{ env.VECTORS_REF }}
+          path: sdcgovernance
+          sparse-checkout: test-vectors
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Conformance kit, canonicalization vectors, party side, MCP server
+        run: npm test
+        env:
+          SDCRECEIPT_KIT: ${{ github.workspace }}/sdcreceipt/tests/conformance
+          JCS_VECTORS: ${{ github.workspace }}/sdcgovernance/test-vectors/rfc8785-canonicalization.json
+
+      - name: Build
+        run: npm run build

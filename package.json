@@ -1,0 +1,58 @@
+{
+  "name": "sdcreceipt-ts",
+  "version": "4.0.0",
+  "description": "Verify VSL Settlement Receipts and sign settlement triggers in TypeScript, conforming to sdcreceipt and the VSL conformance kit.",
+  "mcpName": "io.github.SemanticDataCharter/sdcreceipt-ts",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "sdcreceipt-ts": "dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md",
+    "CHANGELOG.md",
+    "server.json"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test test/*.test.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SemanticDataCharter/sdcreceipt-ts.git"
+  },
+  "keywords": [
+    "vsl",
+    "settlement-receipt",
+    "semantic-data-charter",
+    "sdc4",
+    "ml-dsa",
+    "post-quantum",
+    "rfc8785",
+    "mcp"
+  ],
+  "dependencies": {
+    "@noble/post-quantum": "0.7.1",
+    "ajv": "8.20.0",
+    "canonicalize": "5.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.9.1",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3"
+  }
+}

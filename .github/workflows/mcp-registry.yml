@@ -1,0 +1,31 @@
+name: MCP registry
+
+# Publishes server.json to the MCP registry without a new npm release, for when the release
+# workflow's publish-mcp job fails after npm has published. The version in server.json must
+# already be on npm.
+on:
+  workflow_dispatch:
+
+jobs:
+  publish-mcp:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # GitHub OIDC for MCP Registry auth (io.github.SemanticDataCharter/*)
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: The version is on npm
+        run: |
+          version=$(node -p "require('./server.json').version")
+          npm view "sdcreceipt-ts@$version" version
+
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+
+      - name: Authenticate to MCP Registry (GitHub OIDC)
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish to MCP Registry
+        run: ./mcp-publisher publish
