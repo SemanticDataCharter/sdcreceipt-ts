@@ -14,3 +14,9 @@ export { settle, splitResponse, payloadCurrentState, checkEndpoint, SettleError,
 export type { SettleOptions } from './settle.js';
 export { canonicalize, canonicalizeBytes, JCSError, CANONICALIZATION_ID } from './jcs.js';
 export { strictParse, StrictJsonError } from './json.js';
+export {
+  parseDecisionTable, decisionTableToJson, decisionTableHash, evaluateDecisionTable, pyEquals, TableRegistry,
+  governanceReceiptBytes, governanceReceiptHash, verifyGovernanceReceipt,
+  DecisionTableError, EvaluationError, TableNotFound, TableConflict, GovernanceReceiptError, LEGACY_CANONICALIZATION,
+} from './governance.js';
+export type { Decision, HitPolicy, Op, Condition, Rule, DecisionTable, DecisionResult, RegisteredTable } from './governance.js';
