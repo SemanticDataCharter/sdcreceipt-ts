@@ -2,13 +2,14 @@
  * MCP stdio server for sdcreceipt-ts (sdcreceipt `mcp_server`, Node only: it reads the signing key).
  *
  * A raw JSON-RPC 2.0 stdio server, one JSON object per line, with no MCP SDK dependency, as
- * sdcreceipt's own server is built. Two tools:
+ * sdcreceipt's own server is built. Three tools:
  * - verify_receipt: every check, no network, no account; the caller supplies the key documents;
- * - sign_trigger: offered only when the server was started with a key and an identity.
+ * - sign_trigger: offered only when the server was started with a key and an identity;
+ * - settle: offered only when the server was started with an issuer endpoint and a token.
  *
- * sdcreceipt's `settle` is not here: it is an authenticated client of the issuer's API, which this
- * package does not yet include. Its rules carry over unchanged:
- * - No tool takes a URL as an argument.
+ * Its rules are sdcreceipt's:
+ * - No tool takes a URL as an argument. `settle` reaches the network, and its endpoint is fixed at
+ *   start-up exactly like the key, so it can only reach the issuer an operator chose.
  * - The signing key and the identity it signs as are bound at start-up, never passed per call, so
  *   the key stays out of the conversation and a caller cannot choose who this server signs as.
  * - A signed trigger is returned, never submitted. Posting it is for whoever owns submission.
@@ -17,10 +18,11 @@ import { readFileSync } from 'node:fs';
 import { strictParse } from './json.js';
 import { KeyError, loadKeySet } from './keys.js';
 import { loadPrivateKey, PartyError, signTrigger } from './party.js';
+import { checkEndpoint, settle, SettleError, SettleRejected, splitResponse } from './settle.js';
 import { verify } from './verify.js';
 
 export const SERVER_NAME = 'sdcreceipt-ts';
-export const SERVER_VERSION = '4.0.0';
+export const SERVER_VERSION = '4.0.1';
 /** Newest revision implemented; `initialize` negotiates rather than asserting. */
 export const MCP_PROTOCOL_VERSION = '2025-11-25';
 export const SUPPORTED_PROTOCOL_VERSIONS = ['2025-06-18', '2025-11-25'];
@@ -30,6 +32,10 @@ export interface ServerConfig {
   signingKeyPem?: string;
   /** The party key_id this server signs as. */
   signingKeyId?: string;
+  /** The VSL issuer's settle URL. */
+  issuerEndpoint?: string;
+  /** The API token for that issuer. */
+  issuerToken?: string;
 }
 
 let config: ServerConfig = {};
@@ -82,6 +88,36 @@ export const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'settle',
+    description:
+      'Ask the configured VSL issuer to validate, govern, attest and sign one exchange, returning a Settlement Receipt. This is ' +
+      'the one tool here that needs an account, and it posts only to the endpoint this server was started with. If the ' +
+      "transition is refused, the result carries the transitions that would have been accepted and the model's full workflow, " +
+      'so a second attempt can be informed rather than guessed.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        payload: { type: 'string', description: 'The SDC4 XML instance to settle, as text.' },
+        current_state: { type: 'string', description: "The workflow state the payload is in. Defaults to the payload's own <current-state>." },
+        target_state: { type: 'string', description: 'The state being transitioned to.' },
+        condition: {
+          type: 'object',
+          description: 'The release condition. The issuer hashes it and never stores it, so it may hold terms neither party wants published.',
+        },
+        parties: {
+          type: 'array',
+          items: { type: 'string' },
+          minItems: 2,
+          description:
+            'At least two key_id URIs, each controlled by its party (https://... or did:web:...). That control is what lets a ' +
+            'verifier check a signature without asking the issuer.',
+        },
+        previous_receipt_id: { type: 'string', description: 'Optional. Chain onto an earlier settlement.' },
+      },
+      required: ['payload', 'target_state', 'condition', 'parties'],
+    },
+  },
 ];
 
 /** A tool argument that must be a JSON object, checked before anything runs (Lee, F-03). */
@@ -92,10 +128,8 @@ function requireObject(args: Record<string, unknown>, name: string, optional = f
   return v;
 }
 
-/** A bare Receipt, or the issuer's settle envelope around one (sdcreceipt `split_response`). */
-function receiptOf(value: Record<string, unknown>): Record<string, unknown> {
-  return isObject(value.receipt) ? value.receipt : value;
-}
+/** A bare Receipt, or the issuer's envelope around one. */
+const receiptOf = (value: Record<string, unknown>) => splitResponse(value).receipt;
 
 async function keys(document: Record<string, unknown>) {
   try {
@@ -151,6 +185,69 @@ export const HANDLERS: Record<string, (args: Record<string, unknown>) => Promise
       throw e;
     }
   },
+
+  async settle(args) {
+    if (!config.issuerEndpoint || !config.issuerToken) {
+      throw new ToolError('This server was started without an issuer, so it can verify and sign but not settle. Restart it with --endpoint <url> and a token.');
+    }
+    if (typeof args.payload !== 'string') throw new ToolError('`payload` must be the SDC4 XML instance as a string.');
+    if (typeof args.target_state !== 'string') throw new ToolError('`target_state` must be a string.');
+    if (args.current_state !== undefined && typeof args.current_state !== 'string') throw new ToolError('`current_state` must be a string.');
+    if (!isObject(args.condition)) throw new ToolError('`condition` must be a JSON object.');
+    if (!Array.isArray(args.parties) || !args.parties.every((p) => typeof p === 'string')) {
+      throw new ToolError('`parties` must be an array of key_id strings.');
+    }
+    if (args.previous_receipt_id !== undefined && typeof args.previous_receipt_id !== 'string') {
+      throw new ToolError('`previous_receipt_id` must be a string.');
+    }
+    let answer: Record<string, unknown>;
+    try {
+      answer = await settle(args.payload, {
+        endpoint: config.issuerEndpoint,
+        token: config.issuerToken,
+        currentState: args.current_state as string | undefined,
+        targetState: args.target_state,
+        condition: args.condition,
+        parties: args.parties as string[],
+        previousReceiptId: args.previous_receipt_id as string | undefined,
+      });
+    } catch (e) {
+      // A refused transition is the recoverable failure: returned as a result, so the calling model
+      // sees the states that would work, not only a sentence.
+      if (e instanceof SettleRejected) {
+        return {
+          settled: false,
+          rejected: true,
+          error: e.message,
+          current_state: e.currentState,
+          allowed_transitions: e.allowed,
+          workflow: e.workflow,
+          model_defines_workflow_states: e.definesStates,
+          hint: e.hint,
+        };
+      }
+      if (e instanceof SettleError) throw new ToolError(e.message);
+      throw e;
+    }
+    // The signed Receipt is what verify_receipt and sign_trigger take. A DENY is issued and signed
+    // but accepts no triggers, so the decision is surfaced beside it.
+    const { receipt, meta } = splitResponse(answer);
+    const governance = (isObject(meta.governance) ? meta.governance : {}) as Record<string, unknown>;
+    const inReceipt = (isObject(receipt.governance) ? receipt.governance : {}) as Record<string, unknown>;
+    const result: Record<string, unknown> = {
+      settled: true,
+      receipt,
+      decision: governance.decision ?? inReceipt.decision ?? null,
+      settleable: governance.settleable ?? null,
+    };
+    if (meta.wallet) result.wallet = meta.wallet;
+    if (result.decision === 'DENY') {
+      result.hint = governance.hint ?? 'The issuer refused this transition. The Receipt records the refusal and accepts no triggers.';
+      result.allowed_transitions = governance.allowed_transitions ?? [];
+      result.workflow = governance.workflow ?? [];
+    }
+    return result;
+  },
 };
 
 const response = (id: unknown, result: unknown) => ({ jsonrpc: '2.0', id, result });
@@ -166,6 +263,8 @@ export async function handle(request: unknown): Promise<object | null> {
   const p = params ?? {};
   if (!isObject(p)) return failure(id, -32600, 'Invalid Request: params must be an object');
   const canSign = Boolean(config.signingKeyPem && config.signingKeyId);
+  const canSettle = Boolean(config.issuerEndpoint && config.issuerToken);
+  const offered = (tool: string) => tool === 'verify_receipt' || (tool === 'sign_trigger' && canSign) || (tool === 'settle' && canSettle);
 
   switch (method) {
     case 'initialize': {
@@ -177,8 +276,9 @@ export async function handle(request: unknown): Promise<object | null> {
         instructions:
           'Verify VSL Settlement Receipts and sign settlement triggers, conforming to sdcreceipt. `verify_receipt` needs no network ' +
           'and no account. `sign_trigger` signs with the key this server was started with and returns the trigger unsubmitted. ' +
-          'No tool takes a URL. ' +
-          (canSign ? `Signing is available as ${config.signingKeyId}.` : 'No signing key was configured, so only verification will work.'),
+          '`settle`, when configured, posts only to the issuer this server was started with. No tool takes a URL. ' +
+          (canSign ? `Signing is available as ${config.signingKeyId}. ` : 'No signing key was configured, so signing is unavailable. ') +
+          (canSettle ? 'Settling is available.' : 'No issuer was configured, so settling is unavailable.'),
       });
     }
     case 'notifications/initialized':
@@ -187,13 +287,13 @@ export async function handle(request: unknown): Promise<object | null> {
       return response(id, {});
     case 'tools/list':
       // Advertise only what this server can do.
-      return response(id, { tools: canSign ? TOOLS : [TOOLS[0]] });
+      return response(id, { tools: TOOLS.filter((t) => offered(t.name)) });
     case 'tools/call': {
       const { name, arguments: a = {} } = p as { name?: unknown; arguments?: unknown };
       const args = a ?? {};
       if (typeof name !== 'string') return failure(id, -32602, 'Invalid params: name must be a string');
       const handler = HANDLERS[name];
-      if (!handler || (name === 'sign_trigger' && !canSign)) return failure(id, -32601, `Unknown tool: ${name}`);
+      if (!handler || !offered(name)) return failure(id, -32601, `Unknown tool: ${name}`);
       if (!isObject(args)) return response(id, toolResult('Tool execution error: arguments must be a JSON object.', true));
       try {
         return response(id, toolResult(JSON.stringify(await handler(args))));
@@ -234,12 +334,28 @@ export async function runStdio(): Promise<void> {
   }
 }
 
-/** Read and check the signing key at start-up, so an operator sees a bad key at launch, not an agent mid-task. */
-export async function configureFromFiles(keyPath?: string, keyId?: string): Promise<void> {
-  if (keyPath && !keyId) throw new Error('--key needs --key-id: a signature is only meaningful with the URI it is attributed to.');
-  if (keyId && !keyPath) throw new Error('--key-id without --key cannot sign anything.');
-  if (!keyPath) return configure({});
-  const pem = readFileSync(keyPath, 'utf8');
-  await loadPrivateKey(pem);
-  configure({ signingKeyPem: pem, signingKeyId: keyId });
+/**
+ * Check the start-up options and bind them, so an operator sees a bad key or endpoint at launch,
+ * not an agent mid-task. The token comes from `--token` or SDCRECEIPT_TOKEN.
+ */
+export async function configureFromOptions(o: { key?: string; keyId?: string; endpoint?: string; token?: string }): Promise<void> {
+  if (o.key && !o.keyId) throw new Error('--key needs --key-id: a signature is only meaningful with the URI it is attributed to.');
+  if (o.keyId && !o.key) throw new Error('--key-id without --key cannot sign anything.');
+  const c: ServerConfig = {};
+  if (o.key) {
+    const pem = readFileSync(o.key, 'utf8');
+    await loadPrivateKey(pem);
+    c.signingKeyPem = pem;
+    c.signingKeyId = o.keyId;
+  }
+  if (o.endpoint) {
+    checkEndpoint(o.endpoint);
+    const token = o.token || process.env.SDCRECEIPT_TOKEN || '';
+    if (!token) throw new Error('--endpoint needs a token: pass --token or set SDCRECEIPT_TOKEN. Issuing is the one thing here that needs an account.');
+    c.issuerEndpoint = o.endpoint;
+    c.issuerToken = token;
+  } else if (o.token) {
+    throw new Error('--token without --endpoint has nothing to authenticate to.');
+  }
+  configure(c);
 }

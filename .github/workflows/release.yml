@@ -7,7 +7,7 @@ on:
 env:
   # Keep in step with test.yml.
   KIT_REF: 50590c0bb04e93e7ef6de780e4e4ebb93c7f003c
-  VECTORS_REF: v4.3.1
+  VECTORS_REF: 396c2bf32755789b563c5cac08da0fde564ae995
 
 jobs:
   # A tag publishes irrevocably, so the conformance suite runs first.
@@ -40,11 +40,12 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
 
-      - name: Conformance kit, canonicalization vectors, party side, MCP server
+      - name: Conformance kit, canonicalization and governance vectors, party side, settle, MCP server
         run: npm test
         env:
           SDCRECEIPT_KIT: ${{ github.workspace }}/sdcreceipt/tests/conformance
           JCS_VECTORS: ${{ github.workspace }}/sdcgovernance/test-vectors/rfc8785-canonicalization.json
+          GOVERNANCE_VECTORS: ${{ github.workspace }}/sdcgovernance/test-vectors
 
       - name: Tag matches the package version
         run: |
@@ -75,7 +76,16 @@ jobs:
         # npm exchanges the OIDC token above for a publish credential, so no npm token is stored.
         # The trusted publisher on npmjs.com names this repo, release.yml and the npm environment,
         # with permission to publish (not only to stage).
-        run: npm publish --provenance --access public
+        # A version already on npm (published by hand, or by an earlier run of this tag) is skipped,
+        # so a failed release can be re-run and the MCP registry job still runs.
+        run: |
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "$name@$version is already on npm; skipping the publish."
+          else
+            npm publish --provenance --access public
+          fi
 
   publish-mcp:
     needs: publish-npm
