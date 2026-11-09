@@ -47,3 +47,8 @@
     37 evaluations, 9 governance Receipts. CI pins them to sdcgovernance commit `396c2bf`.
 - **Runs in Node, Deno and browsers.** Checked 2026-11-01 on Node 24.4 (CI runs Node 20, 22 and
   24), Deno 2.5.6 (all 17 kit vectors) and Chromium 152 (the 1.1 vector with its schema).
+
+### Changed
+
+- A release skips the npm publish for a version already on npm. 4.0.0 was published by hand to
+  create the package for trusted publishing, so its tag registers it with the MCP registry only.

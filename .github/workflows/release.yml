@@ -76,7 +76,16 @@ jobs:
         # npm exchanges the OIDC token above for a publish credential, so no npm token is stored.
         # The trusted publisher on npmjs.com names this repo, release.yml and the npm environment,
         # with permission to publish (not only to stage).
-        run: npm publish --provenance --access public
+        # A version already on npm (published by hand, or by an earlier run of this tag) is skipped,
+        # so a failed release can be re-run and the MCP registry job still runs.
+        run: |
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "$name@$version is already on npm; skipping the publish."
+          else
+            npm publish --provenance --access public
+          fi
 
   publish-mcp:
     needs: publish-npm
