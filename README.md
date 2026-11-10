@@ -153,6 +153,8 @@ No tool takes a URL. The signing key, the identity and the issuer endpoint are f
 never passed per call. It is registered in the MCP registry as
 `io.github.SemanticDataCharter/sdcreceipt-ts`.
 
+Also listed on [mcprush](https://mcprush.com/semanticdatacharter/sdcreceipt-ts-mcp).
+
 ## Development
 
 ```bash
