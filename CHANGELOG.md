@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- Before registering with the MCP registry, a release waits up to 10 minutes for npm to serve the
+  new version, rather than giving up after 2.5.
+
 ## [4.0.1] - 2026-11-09
 
 ### Changed
