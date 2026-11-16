@@ -10,7 +10,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { assembleKeys, KeyError, publicKeyFromPem, strictParse, verify, type PublicKey, type Role } from '../src/index.js';
+import { assembleKeys, KeyError, publicKeyFromPem, strictParse, verify, verifyChain, type PublicKey, type Role } from '../src/index.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const KIT = resolve(process.env.SDCRECEIPT_KIT ?? join(here, '..', '..', 'sdcreceipt', 'tests', 'conformance'));
@@ -32,31 +32,44 @@ const partyKeys = await keyMap(keys.party_keys);
 const governance = json('governance-receipt.json');
 const payload = new Uint8Array(readFileSync(join(KIT, 'payload.xml')));
 
-/** `withhold` names evidence deliberately not supplied (the 4.2.0 trigger defect needed it). */
-function run(file: string, withhold: string[] = []) {
+/**
+ * `withhold` names evidence deliberately not supplied (the 4.2.0 trigger defect needed it).
+ * Kit 1.2: `keyDocuments` names published-shape documents used instead of keys.json (which has no
+ * status or window), and `chain` lists held earlier Receipts; an empty list is still a chain.
+ */
+async function run(file: string, withhold: string[] = [], keyDocuments?: { issuer: string; party?: string[] }, chain?: string[]) {
   const receipt = json(file);
+  const keysFor = keyDocuments
+    ? await assembleKeys([
+        { role: 'issuer' as Role, document: json(join('key-documents', keyDocuments.issuer)), source: keyDocuments.issuer },
+        ...(keyDocuments.party ?? []).map((f) => ({ role: 'party' as Role, document: json(join('key-documents', f)), source: f })),
+      ])
+    : { issuerKeys, partyKeys };
   const args: Record<string, unknown> = {
-    issuerKeys,
-    partyKeys,
+    issuerKeys: keysFor.issuerKeys,
+    partyKeys: keysFor.partyKeys,
     schema: schemas[receipt.version],
     governanceReceipt: governance,
     payload,
   };
   const names: Record<string, string> = { party_keys: 'partyKeys', issuer_keys: 'issuerKeys', schema: 'schema', governance_receipt: 'governanceReceipt', payload: 'payload' };
   for (const w of withhold) args[names[w] ?? w] = undefined;
+  if (chain !== undefined) return verifyChain(receipt, { ...(args as any), held: chain.map((f) => json(f)) });
   return verify(receipt, args as any);
 }
 
 test('the kit is present', () => {
-  assert.equal(manifest.version, '1.1');
-  assert.equal(manifest.vectors.length, 17);
+  assert.equal(manifest.version, '1.2');
+  assert.equal(manifest.vectors.length, 27);
   assert.equal(manifest.key_documents.length, 5);
+  assert.equal(manifest.vectors.filter((v: any) => 'chain' in v).length, 6);
+  assert.equal(manifest.vectors.filter((v: any) => 'key_documents' in v).length, 4);
 });
 
 test('every vector behaves as the manifest says, failing on the named check', async () => {
   const problems: string[] = [];
   for (const entry of manifest.vectors) {
-    const result = await run(entry.file, entry.withhold ?? []);
+    const result = await run(entry.file, entry.withhold ?? [], entry.key_documents, entry.chain);
     const failed = new Set(result.failures.map((c) => c.name));
     if (entry.expect === 'valid') {
       if (failed.size) problems.push(`${entry.name}: expected valid, broke ${[...failed].sort()}`);

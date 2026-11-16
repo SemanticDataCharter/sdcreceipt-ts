@@ -16,7 +16,7 @@
 import { ml_dsa65 } from '@noble/post-quantum/ml-dsa.js';
 import Ajv2020 from 'ajv/dist/2020.js';
 import { canonicalizeBytes } from './jcs.js';
-import type { KeySet, PublicKey } from './keys.js';
+import { parseInstant, type KeySet, type KeyWindow, type PublicKey } from './keys.js';
 
 /**
  * Excluded from `receipt_hash`. Signatures sign the hash, so they cannot be inside it, and
@@ -253,6 +253,56 @@ function shapeProblems(receipt: unknown): string[] {
 /** A key map: a KeySet carries published status; a plain Map does not. */
 type Keys = Map<string, PublicKey>;
 const revoked = (keys: Keys, keyId: string) => typeof (keys as KeySet).revoked === 'function' && (keys as KeySet).revoked(keyId);
+/** The validity window the key document published for this key, if the key set kept one. */
+const windowOf = (keys: Keys, keyId: string): KeyWindow | undefined =>
+  typeof (keys as KeySet).window === 'function' ? (keys as KeySet).window(keyId) : undefined;
+
+/**
+ * "" when the Receipt's `timestamp` lies in the issuer key's window, else why not.
+ *
+ * Half-open, `not_before <= timestamp < not_after`, because a retired key's `not_after` is its
+ * successor's `not_before`: one instant belongs to one key. A null bound is no bound, and a key
+ * with no window stated has nothing to check. `retired` inside its window passes, so rotating a key
+ * never breaks the Receipts it signed; `revoked` has already failed, whatever its window says.
+ */
+function issuerWindowReason(window: KeyWindow | undefined, timestamp: unknown): string {
+  if (!window) return '';
+  try {
+    const at = parseInstant(timestamp);
+    if (window.not_before !== null && at < parseInstant(window.not_before)) {
+      return `timestamp ${timestamp} is before the key's not_before ${window.not_before}`;
+    }
+    if (window.not_after !== null && at >= parseInstant(window.not_after)) {
+      return `timestamp ${timestamp} is not before the key's not_after ${window.not_after}`;
+    }
+  } catch (e) {
+    return `cannot compare the key's window with the timestamp: ${(e as Error).message}`;
+  }
+  return '';
+}
+
+/**
+ * "" unless the party key was retired or revoked by the Receipt's `timestamp`.
+ *
+ * A trigger's own timestamp is not signed. What a trigger does sign is `receipt_id`, which did not
+ * exist before the Receipt's signed `timestamp`, so a key whose `not_after` is at or before that
+ * instant could not have made it while valid. `not_before` is not judged: nothing signed says how
+ * late a trigger came.
+ */
+function partyWindowReason(window: KeyWindow | undefined, timestamp: unknown): string {
+  if (!window || window.not_after === null) return '';
+  try {
+    if (parseInstant(window.not_after) <= parseInstant(timestamp)) {
+      return (
+        `the party key's not_after ${window.not_after} is not after the Receipt's timestamp ${timestamp}; ` +
+        'a trigger signs receipt_id, which did not exist before that time'
+      );
+    }
+  } catch (e) {
+    return `cannot compare the party key's window with the timestamp: ${(e as Error).message}`;
+  }
+  return '';
+}
 
 export interface VerifyOptions {
   /** `{key_id: public key}`, held or fetched beforehand. A KeySet also carries `status`; a revoked key fails. */
@@ -359,8 +409,10 @@ export async function verify(receipt: unknown, options: VerifyOptions): Promise<
       result.record(label, false, `key ${repr(keyId)} is marked revoked in the key document`);
       continue;
     }
-    const reason =
+    let reason =
       alg === 'ML-DSA-65' ? verifyMldsa65(key, digest, opt(signature, 'sig', '')) : await verifyEcdsa(key, content, opt(signature, 'sig', ''));
+    // A genuine signature made outside the window the issuer itself published is not the issuer's Receipt.
+    if (!reason) reason = issuerWindowReason(windowOf(issuerKeys, keyId), get(r, 'timestamp'));
     result.record(label, !reason, reason || `verifies over receipt_hash (${alg})`);
   }
 
@@ -404,6 +456,13 @@ export async function verify(receipt: unknown, options: VerifyOptions): Promise<
         continue;
       }
       const reason = await verifyEcdsa(key, message, opt(trig, 'signature', ''));
+      if (!reason) {
+        const windowReason = partyWindowReason(windowOf(partyKeys, keyId), get(r, 'timestamp'));
+        if (windowReason) {
+          result.record(label, false, windowReason);
+          continue;
+        }
+      }
       result.record(label, !reason, reason || 'verifies over {condition_hash, receipt_id}');
       if (reason) {
         result.checks[result.checks.length - 1].detail +=
@@ -462,4 +521,165 @@ export async function verify(receipt: unknown, options: VerifyOptions): Promise<
   }
 
   return result;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Chains: following previous_hash through Receipts the caller holds (sdcreceipt `verify_chain`).
+// ---------------------------------------------------------------------------------------------
+
+/** How many earlier Receipts `verifyChain` follows before giving up. */
+export const CHAIN_CEILING = 10_000;
+
+/** The prefix for link `n` back from the Receipt verified: `chain.link[1 3fa9c1d2…]` (U+2026). */
+export function chainLinkLabel(n: number, previousHash: unknown): string {
+  return `chain.link[${n} ${String(previousHash).slice(0, 8)}\u2026]`;
+}
+
+/** The recomputed `receipt_hash`: SHA-256 over the canonical content, whatever the Receipt records. */
+export async function contentHash(receipt: Json): Promise<string> {
+  return toHex(await sha256(canonicalContent(receipt)));
+}
+
+async function contentHashOrNone(document: unknown): Promise<string | undefined> {
+  if (!isObject(document) || shapeProblems(document).length) return undefined;
+  try {
+    return await contentHash(document);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Python's `==` on two JSON documents: equal values, key order ignored. */
+function sameDocument(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  try {
+    const ca = canonicalizeBytes(a as Json);
+    const cb = canonicalizeBytes(b as Json);
+    return ca.length === cb.length && ca.every((x, i) => x === cb[i]);
+  } catch {
+    return false;
+  }
+}
+
+export interface VerifyChainOptions extends VerifyOptions {
+  /** Earlier Receipts the caller holds. Never fetched. An empty list is still a chain, with nothing held. */
+  held: unknown[];
+  /** Links to follow before giving up; CHAIN_CEILING unless given. */
+  ceiling?: number;
+}
+
+/**
+ * Verify `receipt` and every earlier Receipt its `previous_hash` reaches.
+ *
+ * Held Receipts are parameters, like keys, and never fetched. They are found by recomputed hash,
+ * never the recorded one, so a document cannot claim a place in the chain by writing a
+ * `receipt_hash` it does not have. When no held Receipt hashes to a `previous_hash`, a held one that
+ * records that hash is still examined, so the failure says which link was edited.
+ *
+ * The walk ends at a Receipt whose `previous_hash` is null (`chain.head`). Every earlier link runs
+ * the full procedure with the same keys (and windows) and schema; governance and payload evidence
+ * apply to `receipt` only, and an earlier link never fully triggered fails. Each join records
+ * `<prefix> previous_hash` and `<prefix> timestamp`. The chain cannot be established, on the bare
+ * prefix, when two different held documents hash to the named value, when it is not held, or past
+ * the ceiling; when it is not held but held Receipts are left over, the join fails on
+ * `previous_hash` instead. The names are the VSL conformance kit 1.2's.
+ */
+export async function verifyChain(receipt: unknown, options: VerifyChainOptions): Promise<Result> {
+  const { held, ceiling = CHAIN_CEILING, ...evidence } = options;
+  const result = await verify(receipt, evidence);
+  if (result.failures.some((c) => c.name === 'shape' || c.name === 'version')) return result;
+
+  const byHash = new Map<string, Json[]>();
+  for (const document of held) {
+    const recomputed = await contentHashOrNone(document);
+    if (recomputed === undefined) continue; // cannot be canonicalized, so nothing can name it
+    const documents = byHash.get(recomputed) ?? [];
+    if (!documents.some((d) => sameDocument(d, document))) documents.push(document as Json); // identical copies are one document
+    byHash.set(recomputed, documents);
+  }
+
+  const { issuerKeys, partyKeys, schema } = evidence;
+  const used: Json[] = [];
+  let later = receipt as Json;
+  let n = 0;
+  for (;;) {
+    const previousHash = opt(later, 'previous_hash', null);
+    if (previousHash === null) {
+      result.record('chain.head', true, n === 0 ? 'this Receipt is the head' : `reached the head after ${n} earlier Receipt(s)`);
+      return result;
+    }
+    n += 1;
+    const prefix = chainLinkLabel(n, previousHash);
+    if (n > ceiling) {
+      result.record(prefix, false, `more than ${ceiling} links; the chain cannot be established`);
+      return result;
+    }
+
+    const candidates = typeof previousHash === 'string' ? (byHash.get(previousHash) ?? []) : [];
+    if (candidates.length > 1) {
+      result.record(
+        prefix,
+        false,
+        `${candidates.length} different held documents hash to ${previousHash}. They can differ only in signatures or ` +
+          'settlement.triggers, and the chain cannot say which is the Receipt',
+      );
+      return result;
+    }
+
+    let earlier: Json;
+    if (candidates.length) {
+      earlier = candidates[0];
+      result.record(`${prefix} previous_hash`, true, 'names a held Receipt by its recomputed hash');
+    } else {
+      const leftOver = held.filter(
+        (d): d is Json => isObject(d) && d !== receipt && !sameDocument(d, receipt) && !used.some((u) => u === d),
+      );
+      const claiming = leftOver.filter((d) => get(d, 'receipt_hash') === previousHash);
+      if (claiming.length) {
+        earlier = claiming[0];
+        const recomputed = await contentHashOrNone(earlier);
+        result.record(
+          `${prefix} previous_hash`,
+          false,
+          `names ${previousHash}; a held Receipt records that receipt_hash, but its ` +
+            (recomputed ? `content hashes to ${recomputed}, so it was edited after it was hashed` : 'content cannot be read as a Receipt'),
+        );
+      } else if (leftOver.length) {
+        const hashes = (await Promise.all(leftOver.map(contentHashOrNone))).map((h) => h ?? '(not a Receipt)').sort();
+        result.record(
+          `${prefix} previous_hash`,
+          false,
+          `names ${previousHash}, which no held Receipt hashes to; the held Receipts left over hash to ${JSON.stringify(hashes)}`,
+        );
+        return result;
+      } else {
+        result.record(prefix, false, `names ${previousHash}, which is not held; the chain cannot be established without it`);
+        return result;
+      }
+    }
+
+    if (used.some((u) => u === earlier)) {
+      result.record(prefix, false, 'the chain returns to a Receipt already on it');
+      return result;
+    }
+    used.push(earlier);
+
+    const link = await verify(earlier, { issuerKeys, partyKeys, schema });
+    for (const c of link.checks) result.record(`${prefix} ${c.name}`, c.passed, c.detail);
+    if (link.failures.some((c) => c.name === 'shape' || c.name === 'version')) return result;
+
+    let inOrder: boolean;
+    let detail: string;
+    try {
+      inOrder = parseInstant(get(earlier, 'timestamp')) <= parseInstant(get(later, 'timestamp'));
+      detail = inOrder
+        ? `${get(earlier, 'timestamp')} is not after ${get(later, 'timestamp')}`
+        : `the earlier Receipt's timestamp ${get(earlier, 'timestamp')} is after the later one's ${get(later, 'timestamp')}`;
+    } catch (e) {
+      inOrder = false;
+      detail = `cannot compare timestamps: ${(e as Error).message}`;
+    }
+    result.record(`${prefix} timestamp`, inOrder, detail);
+    later = earlier;
+  }
 }
