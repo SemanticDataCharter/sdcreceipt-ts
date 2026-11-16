@@ -6,8 +6,9 @@ TypeScript, with the same results as
 
 **Conforms to:**
 - the [VSL conformance kit](https://github.com/SemanticDataCharter/sdcreceipt/tree/main/tests/conformance)
-  1.1: all 17 Receipt vectors, each invalid one failing on the check the manifest names, and all 5
-  key-document cases;
+  1.2: all 27 Receipt vectors, each invalid one failing on the check the manifest names (the six
+  chain and four key-window vectors through the library, the command line and the MCP tool), and
+  all 5 key-document cases;
 - [sdcgovernance's vectors](https://github.com/SemanticDataCharter/sdcgovernance/tree/main/test-vectors):
   all 21 RFC 8785 vectors, and the decision-table and governance-Receipt vectors (every table hash,
   all 37 evaluations, all 9 governance Receipts).
@@ -38,6 +39,18 @@ result.checks;    // every check that ran, passed or not: receipt_hash, signatur
 - **Signatures:** every issuer signature over the 32-byte digest. That's `ES256` for Receipt 1.0, and both `ES256` and `ML-DSA-65` (FIPS 204) for Receipt 1.1.
 - **Triggers:** each party's trigger over `{condition_hash, receipt_id}`, with the check that no party triggered twice.
 - **Governance binding and payload hash:** checked when you hold the governance Receipt and the payload.
+- **Key windows:** an issuer signature must fall inside its key's published window,
+  `not_before <= timestamp < not_after`, compared with the Receipt's own signed `timestamp`. A
+  `retired` key inside its window still verifies; a `revoked` key fails whatever its window says. A
+  party key whose `not_after` is at or before the Receipt's `timestamp` fails its trigger. A bound
+  not written as RFC 3339 UTC ending in `Z` refuses the key document. Always on.
+
+**Chains.** `verifyChain(receipt, { ...keys, held })` follows `previous_hash` back to the head
+through the earlier Receipts you hold, running every check on each. Held Receipts are found by the
+hash computed here, never the one a document records, and are never fetched. Checks on earlier
+Receipts are prefixed `chain.link[<n> <first 8 of previous_hash>…]`, and the walk ends with
+`chain.head`. A link not held, two different documents with one hash, or an earlier Receipt never
+fully triggered means not verified. The names are the conformance kit 1.2's.
 
 It reports every check, never only the first failure. A settled Receipt checked without party keys
 does not verify: `settlement.complete` is recorded as unestablished, never decided by comparing
@@ -128,6 +141,7 @@ whose legacy rendering cannot be reproduced; then it says so.
 
 ```bash
 npx sdcreceipt-ts verify receipt.json --issuer-keys issuer.json --party-keys vendor.json --party-keys buyer.json
+npx sdcreceipt-ts verify receipt.json --issuer-keys issuer.json --party-keys vendor.json --party-keys buyer.json --chain receipts/
 ```
 
 ```bash
@@ -145,7 +159,7 @@ The MCP server speaks JSON-RPC 2.0 over stdio, as sdcreceipt's own server does.
 
 | Tool | What it does |
 |---|---|
-| `verify_receipt` | Every check, with each result; no network, no account |
+| `verify_receipt` | Every check, with each result; no network, no account. `party_keys` takes one document or one per party, `chain` the earlier Receipts you hold; `trigger_signatures_checked` and `chain_checked` name what did not run |
 | `sign_trigger` | Signs as the identity the server was started with (`mcp --key FILE --key-id URI`); offered only then; returns the trigger unsubmitted |
 | `settle` | Asks the issuer the server was started with (`mcp --endpoint URL`, token in `--token` or `SDCRECEIPT_TOKEN`) to issue a Receipt; offered only then. A refused transition comes back as a result, with the states that would work |
 

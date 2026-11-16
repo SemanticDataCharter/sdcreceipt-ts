@@ -26,11 +26,24 @@ export class KeyError extends Error {
  *
  * A plain map would lose `status`. A key the document marks `revoked` must not verify anything.
  */
+/** A key's validity window as its key document published it; each bound checked to be the `Z` form on load. */
+export interface KeyWindow {
+  not_before: string | null;
+  not_after: string | null;
+}
+
 export class KeySet extends Map<string, PublicKey> {
   readonly status = new Map<string, string>();
+  /** The window of every key whose document states either bound. */
+  readonly windows = new Map<string, KeyWindow>();
 
   revoked(keyId: string): boolean {
     return (this.status.get(keyId) ?? 'active') === 'revoked';
+  }
+
+  /** The validity window the key document published for this key, or undefined if it stated none. */
+  window(keyId: string): KeyWindow | undefined {
+    return this.windows.get(keyId);
   }
 
   /**
@@ -50,6 +63,7 @@ export class KeySet extends Map<string, PublicKey> {
     }
     for (const [k, v] of other) this.set(k, v);
     for (const [k, v] of other.status) this.status.set(k, v);
+    for (const [k, v] of other.windows) this.windows.set(k, v);
     return this;
   }
 }
@@ -131,6 +145,52 @@ export async function publicKeyFromPem(pem: unknown, keyId: string): Promise<Pub
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
+const UTC_INSTANT = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?Z$/;
+
+/**
+ * An RFC 3339 UTC time ending in `Z`, as microseconds since the epoch, or a thrown Error
+ * (sdcreceipt `verify.parse_instant`).
+ *
+ * Only the `Z` form is accepted: two implementations that disagreed on parsing offsets would
+ * disagree on a window, so the form is fixed rather than interpreted. A fraction keeps six digits,
+ * as Python's `datetime` does, and a date that does not exist (February 30) is refused.
+ */
+export function parseInstant(value: unknown): number {
+  const m = typeof value === 'string' ? UTC_INSTANT.exec(value) : null;
+  if (!m) throw new Error(`${JSON.stringify(value) ?? 'undefined'} is not an RFC 3339 UTC time ending in Z`);
+  const [y, mo, d, h, mi, s] = m.slice(1, 7).map(Number);
+  // setUTCFullYear, not Date.UTC: Date.UTC reads years 0 to 99 as 1900 to 1999.
+  const back = new Date(0);
+  back.setUTCFullYear(y, mo - 1, d);
+  back.setUTCHours(h, mi, s, 0);
+  const ms = back.getTime();
+  if (y < 1 || back.getUTCFullYear() !== y || back.getUTCMonth() !== mo - 1 || back.getUTCDate() !== d || h > 23 || mi > 59 || s > 59) {
+    throw new Error(`${JSON.stringify(value)} is not an RFC 3339 UTC time ending in Z`);
+  }
+  return ms * 1000 + Number((m[7] ?? '').slice(0, 6).padEnd(6, '0'));
+}
+
+/**
+ * The `not_before` / `not_after` a key entry states, or undefined if neither.
+ *
+ * A bound that is present and not the `Z` form refuses the document, as a key listed twice does:
+ * two verifiers must not read one window two ways. A revoked key's window is not read, because a
+ * revoked key fails whatever its window says.
+ */
+function windowOf(entry: Record<string, unknown>, keyId: string): KeyWindow | undefined {
+  const window: KeyWindow = { not_before: (entry.not_before ?? null) as string | null, not_after: (entry.not_after ?? null) as string | null };
+  for (const bound of ['not_before', 'not_after'] as const) {
+    if (window[bound] !== null) {
+      try {
+        parseInstant(window[bound]);
+      } catch (e) {
+        throw new KeyError(`Key ${JSON.stringify(keyId)} ${bound}: ${(e as Error).message}.`);
+      }
+    }
+  }
+  return window.not_before !== null || window.not_after !== null ? window : undefined;
+}
+
 /**
  * Turn a published key document into a KeySet.
  *
@@ -156,6 +216,10 @@ export async function loadKeySet(document: unknown): Promise<KeySet> {
       if (keys.has(keyId)) throw new KeyError(`Key ${JSON.stringify(keyId)} is listed more than once in one key document.`);
       keys.set(keyId, await publicKeyFromPem(pem, keyId));
       if (typeof entry.status === 'string') keys.status.set(keyId, entry.status);
+      if (entry.status !== 'revoked') {
+        const window = windowOf(entry, keyId);
+        if (window) keys.windows.set(keyId, window);
+      }
     }
   }
 

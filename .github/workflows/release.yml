@@ -6,7 +6,7 @@ on:
 
 env:
   # Keep in step with test.yml.
-  KIT_REF: 50590c0bb04e93e7ef6de780e4e4ebb93c7f003c
+  KIT_REF: 5bbd20495ef9413811189924342d576f4def0096
   VECTORS_REF: 396c2bf32755789b563c5cac08da0fde564ae995
 
 jobs:

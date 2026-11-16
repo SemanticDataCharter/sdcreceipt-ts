@@ -7,6 +7,7 @@
  * same files sdcreceipt reads and writes.
  */
 import { triggerMessage } from './verify.js';
+import { parseInstant } from './keys.js';
 
 export class PartyError extends Error {
   override name = 'PartyError';
@@ -50,11 +51,23 @@ export async function loadPrivateKey(text: string): Promise<CryptoKey> {
 }
 
 /** The document a party publishes at its `key_id`, shaped like the issuer's key set so one verifier reads both. */
-export async function keyDocument(publicKey: CryptoKey, keyId: string) {
+export async function keyDocument(publicKey: CryptoKey, keyId: string, options: { notBefore?: string } = {}) {
+  // The window a verifier judges triggers by: made now (unless given), open while in use. Setting
+  // not_after when the key is retired keeps every earlier trigger verifying and stops newer ones.
+  const notBefore = options.notBefore ?? new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+  parseInstant(notBefore); // the Z form a verifier requires, or a thrown Error
   return {
     issuer: keyId,
     keys: [
-      { key_id: keyId, algorithm: 'EC_SIGN_P256_SHA256', alg: 'ES256', public_key_pem: await publicKeyPem(publicKey), status: 'active' },
+      {
+        key_id: keyId,
+        algorithm: 'EC_SIGN_P256_SHA256',
+        alg: 'ES256',
+        public_key_pem: await publicKeyPem(publicKey),
+        status: 'active',
+        not_before: notBefore,
+        not_after: null,
+      },
     ],
   };
 }

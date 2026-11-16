@@ -16,10 +16,10 @@
  */
 import { readFileSync } from 'node:fs';
 import { strictParse } from './json.js';
-import { KeyError, loadKeySet } from './keys.js';
+import { KeyError, KeySet, loadKeySet } from './keys.js';
 import { loadPrivateKey, PartyError, signTrigger } from './party.js';
 import { checkEndpoint, settle, SettleError, SettleRejected, splitResponse } from './settle.js';
-import { verify } from './verify.js';
+import { CHAIN_CEILING, verify, verifyChain } from './verify.js';
 
 export const SERVER_NAME = 'sdcreceipt-ts';
 export const SERVER_VERSION = '4.0.1';
@@ -65,11 +65,21 @@ export const TOOLS = [
           description: "The issuer's published key document, as JSON. Either the key-set shape with a `keys` array, or a did:web DID document.",
         },
         party_keys: {
-          type: 'object',
+          type: ['object', 'array'],
+          items: { type: 'object' },
           description:
-            'Optional. Party key document, to verify triggers. Omitting it skips the trigger check, which is honest when the keys are not held; the result says so.',
+            'Optional. A party key document, or an array of them (one per party; links in one chain can have different parties), to verify triggers. ' +
+            'A key_id two documents claim is refused. Omitting it skips the trigger check, which is honest when the keys are not held; the result says so.',
         },
         governance_receipt: { type: 'object', description: 'Optional. The governance Receipt, if held.' },
+        chain: {
+          type: 'array',
+          items: { type: 'object' },
+          maxItems: CHAIN_CEILING,
+          description:
+            'Optional. Earlier Receipts you hold. When given, previous_hash is followed back to the head and every Receipt on the way runs the full ' +
+            'procedure; an empty array is still a chain, with nothing held. Never fetched: only what you pass is used.',
+        },
       },
       required: ['receipt', 'issuer_keys'],
     },
@@ -140,18 +150,55 @@ async function keys(document: Record<string, unknown>) {
   }
 }
 
+/**
+ * One party key document or an array of them, assembled as the command line does: with
+ * `addDocument`, never last-wins, so a later document cannot replace a key or clear a revocation
+ * an earlier one published (Lee, 4.3.x review, F-02).
+ */
+async function partyKeySet(value: unknown): Promise<KeySet | undefined> {
+  if (value === undefined || value === null || (Array.isArray(value) && !value.length)) return undefined;
+  const documents = Array.isArray(value) ? value : [value];
+  const set = new KeySet();
+  for (const [i, document] of documents.entries()) {
+    if (!isObject(document)) throw new ToolError('`party_keys` must be a JSON object or an array of objects.');
+    try {
+      set.addDocument(await loadKeySet(document), `party document ${i}`);
+    } catch (e) {
+      if (e instanceof KeyError) throw new ToolError(e.message);
+      throw e;
+    }
+  }
+  return set;
+}
+
+/** The held earlier Receipts, or undefined when no chain was asked for. An empty array is still a chain. */
+function chainOf(args: Record<string, unknown>): Record<string, unknown>[] | undefined {
+  if (args.chain === undefined || args.chain === null) return undefined;
+  const chain = args.chain;
+  if (!Array.isArray(chain) || !chain.every(isObject)) throw new ToolError('`chain` must be an array of Receipt objects.');
+  if (chain.length > CHAIN_CEILING) throw new ToolError(`\`chain\` holds ${chain.length} Receipts; at most ${CHAIN_CEILING} are read.`);
+  return chain.map((r) => receiptOf(r as Record<string, unknown>));
+}
+
 export const HANDLERS: Record<string, (args: Record<string, unknown>) => Promise<unknown>> = {
   async verify_receipt(args) {
     const receipt = receiptOf(requireObject(args, 'receipt')!);
     const issuerKeys = await keys(requireObject(args, 'issuer_keys')!);
-    const partyKeys = args.party_keys ? await keys(requireObject(args, 'party_keys')!) : undefined;
-    const result = await verify(receipt, { issuerKeys, partyKeys, governanceReceipt: requireObject(args, 'governance_receipt', true) });
+    const partyKeys = await partyKeySet(args.party_keys);
+    const both = [...issuerKeys.keys()].filter((k) => partyKeys?.has(k)).sort();
+    if (both.length) {
+      throw new ToolError(`key_id ${JSON.stringify(both[0])} appears in both the issuer and a party document. One key has one role; refusing to guess which.`);
+    }
+    const evidence = { issuerKeys, partyKeys, governanceReceipt: requireObject(args, 'governance_receipt', true) };
+    const chain = chainOf(args);
+    const result = chain === undefined ? await verify(receipt, evidence) : await verifyChain(receipt, { ...evidence, held: chain });
     return {
       verified: result.ok,
       checks: result.checks.map((c) => ({ name: c.name, passed: c.passed, detail: c.detail })),
       failures: result.failures.map((c) => c.name),
       // Named so a reader cannot mistake an unrun check for a passed one.
       trigger_signatures_checked: partyKeys !== undefined,
+      chain_checked: chain !== undefined,
     };
   },
 
