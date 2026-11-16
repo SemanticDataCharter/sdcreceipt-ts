@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [4.1.0] - 2026-11-16
+
 Ports sdcreceipt 4.4.0: `verify` follows the chain and checks key validity windows. Check names are
 the VSL conformance kit 1.2's. No Receipt format change.
 

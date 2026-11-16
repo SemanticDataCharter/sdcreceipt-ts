@@ -22,7 +22,7 @@ import { checkEndpoint, settle, SettleError, SettleRejected, splitResponse } fro
 import { CHAIN_CEILING, verify, verifyChain } from './verify.js';
 
 export const SERVER_NAME = 'sdcreceipt-ts';
-export const SERVER_VERSION = '4.0.1';
+export const SERVER_VERSION = '4.1.0';
 /** Newest revision implemented; `initialize` negotiates rather than asserting. */
 export const MCP_PROTOCOL_VERSION = '2025-11-25';
 export const SUPPORTED_PROTOCOL_VERSIONS = ['2025-06-18', '2025-11-25'];
