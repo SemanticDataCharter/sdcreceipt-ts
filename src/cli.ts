@@ -3,7 +3,7 @@
  * The `sdcreceipt-ts` command.
  *
  *   sdcreceipt-ts verify RECEIPT --issuer-keys FILE [--party-keys FILE]... [--schema FILE]
- *                        [--governance FILE] [--payload FILE]
+ *                        [--governance FILE] [--payload FILE] [--chain DIR]
  *   sdcreceipt-ts settle PAYLOAD --target-state S --condition JSON --party URI --party URI
  *                        [--current-state S] [--previous ID] [--endpoint URL] [--out FILE]
  *   sdcreceipt-ts mcp [--key FILE --key-id URI] [--endpoint URL [--token T]]
@@ -12,18 +12,20 @@
  * `npx sdcreceipt-ts mcp`. Key documents are given in a role on the command line, never taken from
  * the Receipt, as sdcreceipt's own command does.
  */
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { strictParse } from './json.js';
 import { assembleKeys, KeyError, type Role } from './keys.js';
 import { configureFromOptions, runStdio, SERVER_VERSION } from './mcp.js';
 import { DEFAULT_ENDPOINT, payloadCurrentState, settle, SettleError, SettleRejected, splitResponse } from './settle.js';
-import { verify } from './verify.js';
+import { verify, verifyChain } from './verify.js';
 
 const USAGE = `usage: sdcreceipt-ts [mcp | verify | --version | --help]
 
-  verify RECEIPT --issuer-keys FILE [--party-keys FILE]... [--schema FILE] [--governance FILE] [--payload FILE]
+  verify RECEIPT --issuer-keys FILE [--party-keys FILE]... [--schema FILE] [--governance FILE] [--payload FILE] [--chain DIR]
       Run every check of the VSL verification procedure. Exit 0 VERIFIED, 1 NOT VERIFIED, 2 usage.
+      --chain: the earlier Receipts held (a directory of *.json, or one file); previous_hash is followed to the head.
   settle PAYLOAD --target-state S --condition JSON --party URI --party URI [--current-state S] [--previous ID]
          [--endpoint URL] [--out FILE]
       Ask a VSL issuer to issue a Receipt. Needs a token in SDCRECEIPT_TOKEN. Writes the Receipt to --out or stdout.
@@ -52,6 +54,7 @@ async function cmdVerify(argv: string[]): Promise<number> {
       schema: { type: 'string' },
       governance: { type: 'string' },
       payload: { type: 'string' },
+      chain: { type: 'string' },
     },
   });
   if (positionals.length !== 1) throw new UsageError('verify takes one Receipt file');
@@ -75,12 +78,26 @@ async function cmdVerify(argv: string[]): Promise<number> {
   // The issuer's settle and status answers carry the Receipt under `receipt`; that is what is verified.
   const { receipt, meta } = splitResponse(readJson(positionals[0], 'Receipt') as Record<string, unknown>);
   if (Object.keys(meta).length) process.stderr.write(`read the Receipt out of the issuer's response (${Object.keys(meta).sort().join(', ')})\n`);
-  const result = await verify(receipt, {
+  const evidence = {
     ...keys,
     schema: values.schema ? (readJson(values.schema, 'schema') as object) : undefined,
     governanceReceipt: values.governance ? (readJson(values.governance, 'governance Receipt') as Record<string, unknown>) : undefined,
     payload: values.payload ? new Uint8Array(readFileSync(values.payload)) : undefined,
-  });
+  };
+  let result;
+  if (values.chain === undefined) {
+    result = await verify(receipt, evidence);
+  } else {
+    // Earlier Receipts are parameters, like keys: read from what the operator holds, never fetched.
+    const self = resolve(positionals[0]);
+    const held = chainFiles(values.chain)
+      .filter((f) => resolve(f) !== self)
+      .map((f) => {
+        const doc = readJson(f, 'chain Receipt');
+        return typeof doc === 'object' && doc !== null && !Array.isArray(doc) ? splitResponse(doc as Record<string, unknown>).receipt : doc;
+      });
+    result = await verifyChain(receipt, { ...evidence, held });
+  }
   process.stdout.write(`${result}\n`);
   if (result.ok) {
     process.stdout.write('\nVERIFIED\n');
@@ -88,6 +105,23 @@ async function cmdVerify(argv: string[]): Promise<number> {
   }
   process.stdout.write(`\nNOT VERIFIED - ${result.failures.length} check(s) failed\n`);
   return 1;
+}
+
+/** The Receipt files `--chain` names: every `*.json` in a directory, or the one file. */
+function chainFiles(path: string): string[] {
+  let stat;
+  try {
+    stat = statSync(path);
+  } catch {
+    throw new UsageError(`--chain ${path} is neither a directory nor a file. Give the folder of earlier Receipts you hold, or one Receipt.`);
+  }
+  if (stat.isFile()) return [path];
+  if (!stat.isDirectory()) throw new UsageError(`--chain ${path} is neither a directory nor a file.`);
+  return readdirSync(path)
+    .filter((f) => f.endsWith('.json'))
+    .sort()
+    .map((f) => join(path, f))
+    .filter((f) => statSync(f).isFile());
 }
 
 async function cmdSettle(argv: string[]): Promise<number> {

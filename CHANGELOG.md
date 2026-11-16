@@ -2,7 +2,37 @@
 
 ## [Unreleased]
 
+Ports sdcreceipt 4.4.0: `verify` follows the chain and checks key validity windows. Check names are
+the VSL conformance kit 1.2's. No Receipt format change.
+
+### Added
+
+- **`verifyChain`** follows `previous_hash` back to the head through the earlier Receipts the
+  caller holds, running the full procedure on each. Held Receipts are found by recomputed hash,
+  never the recorded one, and are never fetched. Each join checks `previous_hash` and that the
+  earlier signed `timestamp` is not after the later one. A link not held, two different documents
+  with one hash, more than 10,000 links, or an earlier Receipt never fully triggered fails. Names:
+  `chain.link[<n> <first 8 of previous_hash>…] <check>` and `chain.head`.
+- **`verify --chain DIR`** (a folder of `*.json`, or one file) on the command line. A `--chain` that
+  names nothing is a usage error.
+- **Key validity windows.** `KeySet` keeps each key's `not_before`/`not_after` (`window(keyId)`).
+  An issuer signature outside `not_before <= timestamp < not_after` fails on that signature; a party
+  key whose `not_after` is at or before the Receipt's `timestamp` fails its trigger. `retired` inside
+  its window passes; `revoked` fails as before. A bound not in RFC 3339 UTC `Z` form refuses the key
+  document. Always on. `parseInstant` is exported.
+- **MCP `verify_receipt`** takes `chain` (an empty array is still a chain) and `party_keys` as one
+  document or an array, assembled with `addDocument`; the result adds `chain_checked`.
+- **`keyDocument`** writes `not_before` (now, or `options.notBefore` in the `Z` form) and
+  `not_after: null`, so the party window has something to read.
+- **Conformance kit 1.2:** all 27 vectors and 5 key-document cases. CI pins the kit to sdcreceipt
+  4.4.0 (`5bbd204`).
+
 ### Changed
+
+- MCP `verify_receipt` refuses a key_id given in both the issuer and a party document, as the
+  command line does.
+- A Receipt signed by a key outside the window its issuer published, which verified before, now
+  fails.
 
 - Before registering with the MCP registry, a release waits up to 10 minutes for npm to serve the
   new version, rather than giving up after 2.5.
