@@ -31,7 +31,7 @@ test('initialize negotiates; tools/list offers signing only when configured', as
   const old = (await handle({ id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05' } })) as any;
   assert.equal(old.result.protocolVersion, '2025-11-25');
   const list = (await handle({ id: 2, method: 'tools/list' })) as any;
-  assert.deepEqual(list.result.tools.map((t: { name: string }) => t.name), ['verify_receipt']);
+  assert.deepEqual(list.result.tools.map((t: { name: string }) => t.name), ['verify_receipt', 'condition_hash']);
   assert.equal((await call('sign_trigger', { receipt: {} })).error.code, -32601);
 });
 

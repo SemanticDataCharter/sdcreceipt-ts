@@ -12,6 +12,8 @@ export { generateKey, privateKeyPem, publicKeyPem, loadPrivateKey, keyDocument, 
 export type { Trigger } from './party.js';
 export { settle, splitResponse, payloadCurrentState, checkEndpoint, SettleError, SettleRejected, DEFAULT_ENDPOINT } from './settle.js';
 export type { SettleOptions } from './settle.js';
+export { project as projectCondition, conditionHash, parse as parseConditionRecord, ConditionError, PROJECTION as CONDITION_PROJECTION } from './condition.js';
+export type { Projection as ConditionProjection, Terms as ConditionTerms, TermValue as ConditionTermValue } from './condition.js';
 export { canonicalize, canonicalizeBytes, JCSError, CANONICALIZATION_ID } from './jcs.js';
 export { strictParse, StrictJsonError } from './json.js';
 export {

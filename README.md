@@ -103,6 +103,25 @@ Its guards are sdcreceipt's:
 - **A redirect** is refused rather than followed, so the token never reaches a host nobody checked.
 - **Two distinct parties** are required before anything is sent.
 
+### A Settlement Condition as the release condition
+
+When the release condition is a Settlement Condition record (the Business Documents library), every
+party must hash the same thing. `conditionHash` projects the record to `sdc-settlement-condition/1`
+(the terms inside the named cluster, keyed by ct_id, values exactly as written) and hashes RFC 8785
+of it. Settle with the projection as the condition and the issuer derives the same `condition_hash`.
+
+```ts
+import { conditionHash, projectCondition } from 'sdcreceipt-ts';
+
+const projection = projectCondition(recordXml, 'eid1kx2nx04u3okbo18vqrks');  // the condition to settle with
+const [hash] = conditionHash(recordXml, 'eid1kx2nx04u3okbo18vqrks');         // what the holder pins
+```
+
+It does not validate the record: validate it against its published model first (an XSD 1.1
+validator, such as `sdcvalidate`), because the model is what enforces the per-kind rules. A DOCTYPE,
+a cluster absent or present twice, and a term with neither a value nor an Exceptional Value are
+refused. A port of sdcreceipt 4.5.0 `condition`, held to the conformance kit 1.3 condition cases.
+
 ### Decision tables and governance Receipts
 
 The parts of sdcgovernance a Receipt relies on.
@@ -148,6 +167,10 @@ npx sdcreceipt-ts verify receipt.json --issuer-keys issuer.json --party-keys ven
 SDCRECEIPT_TOKEN=... npx sdcreceipt-ts settle payload.xml --target-state shipped --condition '{"on":"goods received"}' --party https://vendor.example/k.json --party https://buyer.example/k.json --out receipt.json
 ```
 
+```bash
+npx sdcreceipt-ts condition record.xml --cluster eid1kx2nx04u3okbo18vqrks --out projection.json
+```
+
 `verify` also reads a Receipt out of the issuer's settle or status response. `settle` takes the token
 only from `SDCRECEIPT_TOKEN`, never from a flag, so it stays out of shell history.
 
@@ -162,6 +185,7 @@ The MCP server speaks JSON-RPC 2.0 over stdio, as sdcreceipt's own server does.
 | `verify_receipt` | Every check, with each result; no network, no account. `party_keys` takes one document or one per party, `chain` the earlier Receipts you hold; `trigger_signatures_checked` and `chain_checked` name what did not run |
 | `sign_trigger` | Signs as the identity the server was started with (`mcp --key FILE --key-id URI`); offered only then; returns the trigger unsubmitted |
 | `settle` | Asks the issuer the server was started with (`mcp --endpoint URL`, token in `--token` or `SDCRECEIPT_TOKEN`) to issue a Receipt; offered only then. A refused transition comes back as a result, with the states that would work |
+| `condition_hash` | A Settlement Condition record's projection, its RFC 8785 text and `condition_hash`; local, always offered |
 
 No tool takes a URL. The signing key, the identity and the issuer endpoint are fixed at start-up,
 never passed per call. It is registered in the MCP registry as

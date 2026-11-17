@@ -59,7 +59,7 @@ async function run(file: string, withhold: string[] = [], keyDocuments?: { issue
 }
 
 test('the kit is present', () => {
-  assert.equal(manifest.version, '1.2');
+  assert.equal(manifest.version, '1.3');
   assert.equal(manifest.vectors.length, 27);
   assert.equal(manifest.key_documents.length, 5);
   assert.equal(manifest.vectors.filter((v: any) => 'chain' in v).length, 6);

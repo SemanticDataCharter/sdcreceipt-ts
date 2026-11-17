@@ -127,7 +127,7 @@ test('MCP settle: offered only with an issuer; posts only to it; a refusal is a 
   assert.equal((await call('settle', settleArgs)).error.code, -32601);
   configure({ issuerEndpoint: `${base}/ok`, issuerToken: TOKEN });
   const tools = ((await handle({ id: 1, method: 'tools/list' })) as any).result.tools.map((t: { name: string }) => t.name);
-  assert.deepEqual(tools, ['verify_receipt', 'settle']);
+  assert.deepEqual(tools, ['verify_receipt', 'settle', 'condition_hash']);
   const ok = await call('settle', { ...settleArgs, endpoint: 'https://attacker.example/settle' });
   assert.equal(ok.body.settled, true);
   assert.equal(ok.body.receipt.receipt_id, receipt.receipt_id, 'the bare Receipt, not the envelope');
