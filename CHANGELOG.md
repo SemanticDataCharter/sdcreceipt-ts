@@ -17,7 +17,7 @@ Ports sdcreceipt 4.5.0: the Settlement Condition projection. No Receipt format c
 - **`condition RECORD --cluster CT_ID [--out FILE] [--canonical]`** on the command line; exit 2 on a
   refusal.
 - **MCP `condition_hash`**, offered without configuration: no network, no key.
-- **Conformance kit 1.3:** all 10 condition cases.
+- **Conformance kit 1.3:** all 10 condition cases. CI pins the kit to sdcreceipt `dbf142b`.
 - Dependency: `saxes` 6.0.0, a strict, namespace-aware XML parser (Node has none built in).
 
 ## [4.1.0] - 2026-11-16
