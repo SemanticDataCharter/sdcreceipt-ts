@@ -10,10 +10,10 @@ on:
 env:
   # The VSL conformance kit (tests/conformance/ in sdcreceipt) and sdcgovernance's RFC 8785 vectors
   # (test-vectors/). Pinned so the reference is fixed; moving either is a deliberate change, made
-  # with the CHANGELOG and README. Kit 1.2 (27 vectors, 5 key-document cases) is sdcreceipt 4.4.0's
-  # (tag v4.4.0, commit 5bbd204); sdcgovernance's decision-table and governance-Receipt vectors are
+  # with the CHANGELOG and README. Kit 1.3 (27 vectors, 5 key-document cases, 10 condition cases) is
+  # sdcreceipt's dev commit dbf142b (PR #35, after 4.5.0); sdcgovernance's decision-table and governance-Receipt vectors are
   # pinned by commit.
-  KIT_REF: 5bbd20495ef9413811189924342d576f4def0096
+  KIT_REF: dbf142b3fd351109c64c3f53e0f1327583e5f358
   VECTORS_REF: 396c2bf32755789b563c5cac08da0fde564ae995
 
 jobs:

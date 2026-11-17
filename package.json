@@ -1,6 +1,6 @@
 {
   "name": "sdcreceipt-ts",
-  "version": "4.1.0",
+  "version": "4.2.0",
   "description": "Verify VSL Settlement Receipts, sign settlement triggers and request Receipts in TypeScript, conforming to sdcreceipt and the VSL conformance kit.",
   "mcpName": "io.github.SemanticDataCharter/sdcreceipt-ts",
   "license": "Apache-2.0",
@@ -49,7 +49,8 @@
     "@noble/hashes": "2.4.0",
     "@noble/post-quantum": "0.7.1",
     "ajv": "8.20.0",
-    "canonicalize": "5.1.0"
+    "canonicalize": "5.1.0",
+    "saxes": "6.0.0"
   },
   "devDependencies": {
     "@types/node": "24.9.1",

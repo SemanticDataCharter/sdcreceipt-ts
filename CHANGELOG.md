@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [4.2.0] - 2026-11-17
+
+Ports sdcreceipt 4.5.0: the Settlement Condition projection. No Receipt format change.
+
+### Added
+
+- **`projectCondition` and `conditionHash`**: a Settlement Condition record (XML) to
+  `sdc-settlement-condition/1` and the SHA-256 over RFC 8785 of it, the Receipt's `condition_hash`.
+  Values are lexical; an Exceptional Value is `{ev}`, beside a value `{ev, value}`. A DOCTYPE or
+  entity, a non-SDC4 root, a cluster absent or twice, and an empty term are refused. Read as
+  sdcreceipt reads it (ElementTree): character data before the first child, comments and processing
+  instructions dropped. A declared encoding other than UTF-8 is refused.
+- **`condition RECORD --cluster CT_ID [--out FILE] [--canonical]`** on the command line; exit 2 on a
+  refusal.
+- **MCP `condition_hash`**, offered without configuration: no network, no key.
+- **Conformance kit 1.3:** all 10 condition cases. CI pins the kit to sdcreceipt `dbf142b`.
+- Dependency: `saxes` 6.0.0, a strict, namespace-aware XML parser (Node has none built in).
+
 ## [4.1.0] - 2026-11-16
 
 Ports sdcreceipt 4.4.0: `verify` follows the chain and checks key validity windows. Check names are

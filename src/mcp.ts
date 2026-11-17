@@ -2,10 +2,11 @@
  * MCP stdio server for sdcreceipt-ts (sdcreceipt `mcp_server`, Node only: it reads the signing key).
  *
  * A raw JSON-RPC 2.0 stdio server, one JSON object per line, with no MCP SDK dependency, as
- * sdcreceipt's own server is built. Three tools:
+ * sdcreceipt's own server is built. Four tools:
  * - verify_receipt: every check, no network, no account; the caller supplies the key documents;
  * - sign_trigger: offered only when the server was started with a key and an identity;
- * - settle: offered only when the server was started with an issuer endpoint and a token.
+ * - settle: offered only when the server was started with an issuer endpoint and a token;
+ * - condition_hash: a Settlement Condition record's projection and condition_hash; local, always offered.
  *
  * Its rules are sdcreceipt's:
  * - No tool takes a URL as an argument. `settle` reaches the network, and its endpoint is fixed at
@@ -15,6 +16,7 @@
  * - A signed trigger is returned, never submitted. Posting it is for whoever owns submission.
  */
 import { readFileSync } from 'node:fs';
+import { ConditionError, conditionHash, project } from './condition.js';
 import { strictParse } from './json.js';
 import { KeyError, KeySet, loadKeySet } from './keys.js';
 import { loadPrivateKey, PartyError, signTrigger } from './party.js';
@@ -22,7 +24,7 @@ import { checkEndpoint, settle, SettleError, SettleRejected, splitResponse } fro
 import { CHAIN_CEILING, verify, verifyChain } from './verify.js';
 
 export const SERVER_NAME = 'sdcreceipt-ts';
-export const SERVER_VERSION = '4.1.0';
+export const SERVER_VERSION = '4.2.0';
 /** Newest revision implemented; `initialize` negotiates rather than asserting. */
 export const MCP_PROTOCOL_VERSION = '2025-11-25';
 export const SUPPORTED_PROTOCOL_VERSIONS = ['2025-06-18', '2025-11-25'];
@@ -128,6 +130,21 @@ export const TOOLS = [
       required: ['payload', 'target_state', 'condition', 'parties'],
     },
   },
+  {
+    name: 'condition_hash',
+    description:
+      'Project a Settlement Condition record (a governed record, as XML) to sdc-settlement-condition/1 and return the projection, ' +
+      'its RFC 8785 bytes and condition_hash. Local: no network. Does not validate the record; validate it against its published ' +
+      'model first. Settle with the projection as the condition and the issuer derives the same hash.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        record: { type: 'string', description: 'The Settlement Condition governed record, as XML.' },
+        cluster: { type: 'string', description: "The Settlement Condition cluster's ct_id in the model." },
+      },
+      required: ['record', 'cluster'],
+    },
+  },
 ];
 
 /** A tool argument that must be a JSON object, checked before anything runs (Lee, F-03). */
@@ -181,6 +198,18 @@ function chainOf(args: Record<string, unknown>): Record<string, unknown>[] | und
 }
 
 export const HANDLERS: Record<string, (args: Record<string, unknown>) => Promise<unknown>> = {
+  async condition_hash(args) {
+    if (typeof args.record !== 'string' || typeof args.cluster !== 'string') {
+      throw new ToolError('`record` (XML text) and `cluster` (a ct_id) are required strings.');
+    }
+    try {
+      const [digest, canon] = conditionHash(args.record, args.cluster);
+      return { condition_hash: digest, canonical: new TextDecoder().decode(canon), projection: project(args.record, args.cluster) };
+    } catch (e) {
+      if (e instanceof ConditionError) throw new ToolError(e.message);
+      throw e;
+    }
+  },
   async verify_receipt(args) {
     const receipt = receiptOf(requireObject(args, 'receipt')!);
     const issuerKeys = await keys(requireObject(args, 'issuer_keys')!);
@@ -311,7 +340,7 @@ export async function handle(request: unknown): Promise<object | null> {
   if (!isObject(p)) return failure(id, -32600, 'Invalid Request: params must be an object');
   const canSign = Boolean(config.signingKeyPem && config.signingKeyId);
   const canSettle = Boolean(config.issuerEndpoint && config.issuerToken);
-  const offered = (tool: string) => tool === 'verify_receipt' || (tool === 'sign_trigger' && canSign) || (tool === 'settle' && canSettle);
+  const offered = (tool: string) => tool === 'verify_receipt' || tool === 'condition_hash' || (tool === 'sign_trigger' && canSign) || (tool === 'settle' && canSettle);
 
   switch (method) {
     case 'initialize': {
@@ -321,7 +350,7 @@ export async function handle(request: unknown): Promise<object | null> {
         capabilities: { tools: { listChanged: false } },
         serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
         instructions:
-          'Verify VSL Settlement Receipts and sign settlement triggers, conforming to sdcreceipt. `verify_receipt` needs no network ' +
+          'Verify VSL Settlement Receipts and sign settlement triggers, conforming to sdcreceipt. `verify_receipt` and `condition_hash` need no network ' +
           'and no account. `sign_trigger` signs with the key this server was started with and returns the trigger unsubmitted. ' +
           '`settle`, when configured, posts only to the issuer this server was started with. No tool takes a URL. ' +
           (canSign ? `Signing is available as ${config.signingKeyId}. ` : 'No signing key was configured, so signing is unavailable. ') +

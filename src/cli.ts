@@ -6,13 +6,15 @@
  *                        [--governance FILE] [--payload FILE] [--chain DIR]
  *   sdcreceipt-ts settle PAYLOAD --target-state S --condition JSON --party URI --party URI
  *                        [--current-state S] [--previous ID] [--endpoint URL] [--out FILE]
+ *   sdcreceipt-ts condition RECORD --cluster CT_ID [--out FILE] [--canonical]
  *   sdcreceipt-ts mcp [--key FILE --key-id URI] [--endpoint URL [--token T]]
  *
  * With no command, or with `mcp`, the MCP stdio server starts: an MCP registry client runs
  * `npx sdcreceipt-ts mcp`. Key documents are given in a role on the command line, never taken from
  * the Receipt, as sdcreceipt's own command does.
  */
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { ConditionError, conditionHash, project } from './condition.js';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { strictParse } from './json.js';
@@ -21,7 +23,7 @@ import { configureFromOptions, runStdio, SERVER_VERSION } from './mcp.js';
 import { DEFAULT_ENDPOINT, payloadCurrentState, settle, SettleError, SettleRejected, splitResponse } from './settle.js';
 import { verify, verifyChain } from './verify.js';
 
-const USAGE = `usage: sdcreceipt-ts [mcp | verify | --version | --help]
+const USAGE = `usage: sdcreceipt-ts [mcp | verify | settle | condition | --version | --help]
 
   verify RECEIPT --issuer-keys FILE [--party-keys FILE]... [--schema FILE] [--governance FILE] [--payload FILE] [--chain DIR]
       Run every check of the VSL verification procedure. Exit 0 VERIFIED, 1 NOT VERIFIED, 2 usage.
@@ -29,6 +31,9 @@ const USAGE = `usage: sdcreceipt-ts [mcp | verify | --version | --help]
   settle PAYLOAD --target-state S --condition JSON --party URI --party URI [--current-state S] [--previous ID]
          [--endpoint URL] [--out FILE]
       Ask a VSL issuer to issue a Receipt. Needs a token in SDCRECEIPT_TOKEN. Writes the Receipt to --out or stdout.
+  condition RECORD --cluster CT_ID [--out FILE] [--canonical]
+      Project a Settlement Condition record (sdc-settlement-condition/1) and print its condition_hash. Does not validate
+      the record. --out writes the projection, to settle with as --condition; --canonical prints its RFC 8785 text too.
   mcp [--key FILE --key-id URI] [--endpoint URL [--token T]]
       The MCP stdio server (JSON-RPC 2.0 on stdin). With a key and an identity it can sign triggers; with an
       issuer endpoint and a token (--token or SDCRECEIPT_TOKEN) it can settle.
@@ -200,6 +205,35 @@ async function cmdSettle(argv: string[]): Promise<number> {
   return 0;
 }
 
+function cmdCondition(argv: string[]): number {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    allowPositionals: true,
+    options: { cluster: { type: 'string' }, out: { type: 'string' }, canonical: { type: 'boolean' } },
+  });
+  if (positionals.length !== 1) throw new UsageError('condition takes one record file (the Settlement Condition governed record)');
+  if (!values.cluster) throw new UsageError('--cluster (the Settlement Condition cluster ct_id) is required');
+  let digest: string, canon: Uint8Array, data: Uint8Array;
+  try {
+    data = new Uint8Array(readFileSync(positionals[0]));
+    [digest, canon] = conditionHash(data, values.cluster);
+  } catch (e) {
+    if (e instanceof ConditionError || (e as NodeJS.ErrnoException).code) {
+      process.stderr.write(`sdcreceipt-ts: ${(e as Error).message}\n`);
+      return 2;
+    }
+    throw e;
+  }
+  if (values.out) writeFileSync(values.out, JSON.stringify(project(data, values.cluster), null, 2) + '\n');
+  if (values.canonical) process.stdout.write(new TextDecoder().decode(canon) + '\n');
+  process.stdout.write(`${digest}\n`);
+  process.stderr.write(
+    'Hash only a record that validates against its published model (sdcvalidator); this command does not validate it. ' +
+      'Settle with the projection as the condition (--out FILE, then settle --condition "$(cat FILE)") and the issuer derives the same hash.\n',
+  );
+  return 0;
+}
+
 async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
   if (command === undefined || command === 'mcp') {
@@ -216,6 +250,7 @@ async function main(argv: string[]): Promise<number> {
   }
   if (command === 'verify') return cmdVerify(rest);
   if (command === 'settle') return cmdSettle(rest);
+  if (command === 'condition') return cmdCondition(rest);
   if (command === '--version' || command === '-v') {
     process.stdout.write(`${SERVER_VERSION}\n`);
     return 0;
